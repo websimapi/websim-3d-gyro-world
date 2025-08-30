@@ -1,26 +1,77 @@
 import * as THREE from 'three';
 
 let camera, scene, renderer;
-let calibrationQuaternion = new THREE.Quaternion();
-let isCalibrated = false;
+let isRunning = false;
+let orientationSensor;
+let deviceQuaternion = new THREE.Quaternion();
 
 const startButton = document.getElementById('start-button');
 const infoText = document.querySelector('#info p');
-const infoHeader = document.querySelector('#info h1');
-const calibrationHelper = document.getElementById('calibration-helper');
 const overlay = document.getElementById('overlay');
 
-const deviceQuaternion = new THREE.Quaternion();
+// World orientation
+const worldTransform = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
 
 startButton.addEventListener('click', handlePermissionRequest);
 
 function handlePermissionRequest() {
+    startButton.disabled = true;
+
+    // --- Try new Sensor API first ---
+    if ('AbsoluteOrientationSensor' in window) {
+        Promise.all([
+            navigator.permissions.query({ name: "accelerometer" }),
+            navigator.permissions.query({ name: "magnetometer" }),
+            navigator.permissions.query({ name: "gyroscope" }),
+        ])
+        .then((results) => {
+            if (results.every((result) => result.state === "granted" || result.state === "prompt")) {
+                initSensor();
+            } else {
+                infoText.textContent = "Sensor permissions are required. Please grant them and refresh.";
+            }
+        }).catch(err => {
+            console.error("Sensor permissions error:", err);
+            // Fallback to old API if new one fails for permission reasons
+            tryDeviceOrientation();
+        });
+    } else {
+        tryDeviceOrientation();
+    }
+}
+
+function initSensor() {
+    orientationSensor = new AbsoluteOrientationSensor({ frequency: 60, referenceFrame: 'device' });
+    orientationSensor.addEventListener('reading', onSensorUpdate);
+    orientationSensor.addEventListener('error', (event) => {
+        console.error('Sensor error:', event.error.name, event.error.message);
+        if (event.error.name === 'NotAllowedError') {
+            infoText.textContent = "Permission to use sensors was denied.";
+        } else {
+             // Fallback if sensor fails for other reasons
+            orientationSensor.stop();
+            tryDeviceOrientation();
+        }
+    });
+
+    orientationSensor.start();
+    startExperience();
+}
+
+function onSensorUpdate() {
+    if (orientationSensor.quaternion) {
+        deviceQuaternion.fromArray(orientationSensor.quaternion);
+    }
+}
+
+function tryDeviceOrientation() {
     // Check for iOS 13+ permission API
     if (typeof DeviceOrientationEvent.requestPermission === 'function') {
         DeviceOrientationEvent.requestPermission()
             .then(permissionState => {
                 if (permissionState === 'granted') {
-                    setupSceneAndCalibration();
+                    window.addEventListener('deviceorientation', onDeviceOrientation, true);
+                    startExperience();
                 } else {
                     infoText.textContent = 'Permission for device orientation was denied. Please refresh and try again.';
                     startButton.disabled = true;
@@ -32,47 +83,26 @@ function handlePermissionRequest() {
             });
     } else {
         // Handle non-iOS devices that don't need explicit permission
-        setupSceneAndCalibration();
+        window.addEventListener('deviceorientation', onDeviceOrientation, true);
+        startExperience();
     }
-}
-
-function setupSceneAndCalibration() {
-    initScene();
-    
-    // Update UI for calibration step
-    infoHeader.textContent = 'Calibration';
-    infoText.textContent = 'Ready to calibrate.';
-    calibrationHelper.style.display = 'block';
-    startButton.textContent = 'Calibrate';
-    startButton.disabled = false;
-    
-    // Remove previous listener and add new one for calibration
-    startButton.removeEventListener('click', handlePermissionRequest);
-    startButton.addEventListener('click', calibrateAndStart);
-
-    // Start listening to device orientation to capture data for calibration
-    window.addEventListener('deviceorientation', onDeviceOrientation, true);
 }
 
 function onDeviceOrientation(event) {
     if (!event.alpha) return;
 
-    const alpha = THREE.MathUtils.degToRad(event.alpha);
-    const beta = THREE.MathUtils.degToRad(event.beta);
-    const gamma = THREE.MathUtils.degToRad(event.gamma);
+    const alpha = THREE.MathUtils.degToRad(event.alpha); // yaw
+    const beta = THREE.MathUtils.degToRad(event.beta);   // pitch
+    const gamma = THREE.MathUtils.degToRad(event.gamma); // roll
     
     const euler = new THREE.Euler(beta, alpha, -gamma, 'YXZ');
     deviceQuaternion.setFromEuler(euler);
 }
 
-function calibrateAndStart() {
-    // The device should be flat, so its current orientation is our baseline.
-    // The screen transform will be applied later, so we just need the raw device quaternion.
-    calibrationQuaternion.copy(deviceQuaternion).invert();
-    isCalibrated = true;
-
-    // Hide overlay and start the experience
+function startExperience() {
+    initScene();
     overlay.style.display = 'none';
+    isRunning = true;
     animate();
 }
 
@@ -135,19 +165,16 @@ function createWorld() {
 }
 
 function updateCameraOrientation() {
-    const screenTransform = new THREE.Quaternion();
-    const worldTransform = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // -90 degrees around X-axis
+    // Correct for screen orientation
     const screenOrientation = THREE.MathUtils.degToRad(window.orientation || 0);
+    const screenTransform = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -screenOrientation);
 
-    screenTransform.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -screenOrientation);
-
-    // Combine transforms
+    // Combine transforms:
+    // 1. Start with world orientation.
     camera.quaternion.copy(worldTransform);
-    // Apply calibration rotation
-    camera.quaternion.multiply(calibrationQuaternion);
-    // Apply current device rotation
+    // 2. Apply current device orientation.
     camera.quaternion.multiply(deviceQuaternion);
-    // Apply screen orientation
+    // 3. Adjust for screen rotation.
     camera.quaternion.multiply(screenTransform);
 }
 
@@ -159,9 +186,8 @@ function onWindowResize() {
 }
 
 function animate() {
+    if (!isRunning) return;
     requestAnimationFrame(animate);
-    if(isCalibrated) {
-        updateCameraOrientation();
-    }
+    updateCameraOrientation();
     renderer.render(scene, camera);
 }
