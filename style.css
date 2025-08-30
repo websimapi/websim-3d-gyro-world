@@ -51,7 +51,7 @@ canvas {
 
 #start-button:disabled {
     background: #555;
-    cursor: wait;
+    cursor: not-allowed;
 }
 
 #calibration-helper {

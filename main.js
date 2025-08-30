@@ -4,9 +4,11 @@ let camera, scene, renderer;
 let isRunning = false;
 let orientationSensor;
 let deviceQuaternion = new THREE.Quaternion();
+let calibrationQuaternion = new THREE.Quaternion();
 
 const startButton = document.getElementById('start-button');
 const infoText = document.querySelector('#info p');
+const infoTitle = document.querySelector('#info h1');
 const overlay = document.getElementById('overlay');
 
 // World orientation
@@ -55,7 +57,7 @@ function initSensor() {
     });
 
     orientationSensor.start();
-    startExperience();
+    showCalibrationScreen();
 }
 
 function onSensorUpdate() {
@@ -71,7 +73,7 @@ function tryDeviceOrientation() {
             .then(permissionState => {
                 if (permissionState === 'granted') {
                     window.addEventListener('deviceorientation', onDeviceOrientation, true);
-                    startExperience();
+                    showCalibrationScreen();
                 } else {
                     infoText.textContent = 'Permission for device orientation was denied. Please refresh and try again.';
                     startButton.disabled = true;
@@ -84,7 +86,7 @@ function tryDeviceOrientation() {
     } else {
         // Handle non-iOS devices that don't need explicit permission
         window.addEventListener('deviceorientation', onDeviceOrientation, true);
-        startExperience();
+        showCalibrationScreen();
     }
 }
 
@@ -97,6 +99,22 @@ function onDeviceOrientation(event) {
     
     const euler = new THREE.Euler(beta, alpha, -gamma, 'YXZ');
     deviceQuaternion.setFromEuler(euler);
+}
+
+function showCalibrationScreen() {
+    infoTitle.textContent = "Calibrate Your View";
+    infoText.textContent = "Point your phone in the desired 'forward' direction and press Start.";
+    startButton.textContent = "Start";
+    startButton.disabled = false;
+
+    startButton.removeEventListener('click', handlePermissionRequest);
+    startButton.addEventListener('click', calibrateAndStart, { once: true });
+}
+
+function calibrateAndStart() {
+    // Capture the current orientation as the 'zero' point.
+    calibrationQuaternion.copy(deviceQuaternion);
+    startExperience();
 }
 
 function startExperience() {
@@ -169,12 +187,17 @@ function updateCameraOrientation() {
     const screenOrientation = THREE.MathUtils.degToRad(window.orientation || 0);
     const screenTransform = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -screenOrientation);
 
+    // Get the inverse of the calibration quaternion
+    const calibrationInverse = calibrationQuaternion.clone().invert();
+
     // Combine transforms:
     // 1. Start with world orientation.
     camera.quaternion.copy(worldTransform);
-    // 2. Apply current device orientation.
+    // 2. Apply inverse of calibration rotation. This "resets" the view to forward.
+    camera.quaternion.multiply(calibrationInverse);
+    // 3. Apply current device orientation.
     camera.quaternion.multiply(deviceQuaternion);
-    // 3. Adjust for screen rotation.
+    // 4. Adjust for screen rotation.
     camera.quaternion.multiply(screenTransform);
 }
 
