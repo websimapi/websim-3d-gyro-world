@@ -5,16 +5,18 @@ let isRunning = false;
 let orientationSensor;
 let deviceQuaternion = new THREE.Quaternion();
 let calibrationQuaternion = new THREE.Quaternion();
+const recalibrateButton = document.getElementById('recalibrate-button');
 
 const startButton = document.getElementById('start-button');
 const infoText = document.querySelector('#info p');
 const infoTitle = document.querySelector('#info h1');
 const overlay = document.getElementById('overlay');
 
-// World orientation
+// World orientation - setFromAxisAngle is more explicit
 const worldTransform = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
 
 startButton.addEventListener('click', handlePermissionRequest);
+recalibrateButton.addEventListener('click', showCalibrationScreen);
 
 function handlePermissionRequest() {
     startButton.disabled = true;
@@ -43,6 +45,10 @@ function handlePermissionRequest() {
 }
 
 function initSensor() {
+    if (orientationSensor) {
+        showCalibrationScreen();
+        return;
+    }
     orientationSensor = new AbsoluteOrientationSensor({ frequency: 60, referenceFrame: 'device' });
     orientationSensor.addEventListener('reading', onSensorUpdate);
     orientationSensor.addEventListener('error', (event) => {
@@ -52,6 +58,7 @@ function initSensor() {
         } else {
              // Fallback if sensor fails for other reasons
             orientationSensor.stop();
+            orientationSensor = null; // Clear it
             tryDeviceOrientation();
         }
     });
@@ -91,35 +98,44 @@ function tryDeviceOrientation() {
 }
 
 function onDeviceOrientation(event) {
-    if (!event.alpha) return;
-
-    const alpha = THREE.MathUtils.degToRad(event.alpha); // yaw
-    const beta = THREE.MathUtils.degToRad(event.beta);   // pitch
-    const gamma = THREE.MathUtils.degToRad(event.gamma); // roll
+    if (!event.alpha && !event.beta && !event.gamma) return;
     
+    const alpha = event.alpha ? THREE.MathUtils.degToRad(event.alpha) : 0; // Z
+    const beta = event.beta ? THREE.MathUtils.degToRad(event.beta) : 0;   // X
+    const gamma = event.gamma ? THREE.MathUtils.degToRad(event.gamma) : 0; // Y
+
     const euler = new THREE.Euler(beta, alpha, -gamma, 'YXZ');
     deviceQuaternion.setFromEuler(euler);
 }
 
 function showCalibrationScreen() {
+    overlay.style.display = 'flex';
     infoTitle.textContent = "Calibrate Your View";
     infoText.textContent = "Point your phone in the desired 'forward' direction and press Start.";
     startButton.textContent = "Start";
     startButton.disabled = false;
 
+    // Ensure we don't stack listeners
     startButton.removeEventListener('click', handlePermissionRequest);
+    startButton.removeEventListener('click', calibrateAndStart);
     startButton.addEventListener('click', calibrateAndStart, { once: true });
 }
 
 function calibrateAndStart() {
-    // Capture the current orientation as the 'zero' point.
-    calibrationQuaternion.copy(deviceQuaternion);
-    startExperience();
+    // Capture the inverse of the current device orientation.
+    calibrationQuaternion.copy(deviceQuaternion).invert();
+    
+    if (!isRunning) {
+        startExperience();
+    } else {
+        overlay.style.display = 'none';
+    }
 }
 
 function startExperience() {
     initScene();
     overlay.style.display = 'none';
+    recalibrateButton.style.display = 'block';
     isRunning = true;
     animate();
 }
@@ -163,6 +179,14 @@ function createWorld() {
     ground.rotation.x = -Math.PI / 2;
     scene.add(ground);
 
+    // Add a cube in front of the starting position to orient the user
+    const orientationCube = new THREE.Mesh(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshPhongMaterial({ color: 0xff0000 })
+    );
+    orientationCube.position.set(0, 1, -5);
+    scene.add(orientationCube);
+
     // Objects
     const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
     for (let i = 0; i < 50; i++) {
@@ -183,21 +207,22 @@ function createWorld() {
 }
 
 function updateCameraOrientation() {
-    // Correct for screen orientation
-    const screenOrientation = THREE.MathUtils.degToRad(window.orientation || 0);
+    // Correct for screen orientation (landscape/portrait)
+    const screenOrientation = window.orientation ? THREE.MathUtils.degToRad(window.orientation) : 0;
     const screenTransform = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -screenOrientation);
 
-    // Get the inverse of the calibration quaternion
-    const calibrationInverse = calibrationQuaternion.clone().invert();
-
     // Combine transforms:
-    // 1. Start with world orientation.
-    camera.quaternion.copy(worldTransform);
-    // 2. Apply inverse of calibration rotation. This "resets" the view to forward.
-    camera.quaternion.multiply(calibrationInverse);
-    // 3. Apply current device orientation.
-    camera.quaternion.multiply(deviceQuaternion);
-    // 4. Adjust for screen rotation.
+    // 1. Start with the device's current orientation
+    camera.quaternion.copy(deviceQuaternion);
+    
+    // 2. Apply the inverse of the calibration orientation.
+    // This "resets" the view to the calibrated "forward" direction.
+    camera.quaternion.premultiply(calibrationQuaternion);
+    
+    // 3. Transform from the device's coordinate system to the world's coordinate system.
+    camera.quaternion.premultiply(worldTransform);
+    
+    // 4. Adjust for the screen's orientation.
     camera.quaternion.multiply(screenTransform);
 }
 
