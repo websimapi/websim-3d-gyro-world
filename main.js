@@ -1,13 +1,16 @@
 import * as THREE from 'three';
 
 let camera, scene, renderer;
+let calibrationQuaternion = new THREE.Quaternion();
+let isCalibrated = false;
 
 const startButton = document.getElementById('start-button');
 startButton.addEventListener('click', init);
 
 function init() {
     const overlay = document.getElementById('overlay');
-    overlay.style.display = 'none';
+    startButton.textContent = 'Calibrating...';
+    startButton.disabled = true;
 
     // Scene
     scene = new THREE.Scene();
@@ -36,7 +39,10 @@ function init() {
     createWorld();
 
     // Controls
-    setupDeviceControls();
+    setupDeviceControls(() => {
+        // This callback is executed once calibration is done.
+        overlay.style.display = 'none';
+    });
 
     // Handle window resize
     window.addEventListener('resize', onWindowResize);
@@ -72,7 +78,7 @@ function createWorld() {
     }
 }
 
-function setupDeviceControls() {
+function setupDeviceControls(onCalibrationDone) {
     const deviceQuaternion = new THREE.Quaternion();
     const screenTransform = new THREE.Quaternion();
     const worldTransform = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // -90 degrees around X-axis
@@ -90,14 +96,30 @@ function setupDeviceControls() {
         
         screenTransform.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -screenOrientation);
         
+        if (!isCalibrated) {
+            isCalibrated = true;
+            
+            // To get the initial device orientation without screen rotation,
+            // we apply the inverse of the screen transform.
+            calibrationQuaternion.copy(deviceQuaternion).multiply(screenTransform.clone().invert());
+
+            if (onCalibrationDone) {
+                onCalibrationDone();
+            }
+        }
+        
         // Combine transforms
         camera.quaternion.copy(worldTransform);
+        // Apply inverse of calibration rotation
+        camera.quaternion.multiply(calibrationQuaternion.clone().invert());
+        // Apply current device rotation
         camera.quaternion.multiply(deviceQuaternion);
+        // Apply screen orientation
         camera.quaternion.multiply(screenTransform);
     };
 
     const requestAndStart = () => {
-        window.addEventListener('deviceorientation', onDeviceOrientation);
+        window.addEventListener('deviceorientation', onDeviceOrientation, true);
     };
 
     // Check for iOS 13+ permission API
@@ -127,4 +149,3 @@ function animate() {
     requestAnimationFrame(animate);
     renderer.render(scene, camera);
 }
-

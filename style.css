@@ -49,3 +49,7 @@ canvas {
     background: #0056b3;
 }
 
+#start-button:disabled {
+    background: #555;
+    cursor: wait;
+}
