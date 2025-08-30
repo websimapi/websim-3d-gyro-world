@@ -53,3 +53,9 @@ canvas {
     background: #555;
     cursor: wait;
 }
+
+#calibration-helper {
+    margin-top: 1.5em;
+    font-size: 0.9em;
+    color: #ccc;
+}

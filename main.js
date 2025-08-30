@@ -5,13 +5,78 @@ let calibrationQuaternion = new THREE.Quaternion();
 let isCalibrated = false;
 
 const startButton = document.getElementById('start-button');
-startButton.addEventListener('click', init);
+const infoText = document.querySelector('#info p');
+const infoHeader = document.querySelector('#info h1');
+const calibrationHelper = document.getElementById('calibration-helper');
+const overlay = document.getElementById('overlay');
 
-function init() {
-    const overlay = document.getElementById('overlay');
-    startButton.textContent = 'Calibrating...';
-    startButton.disabled = true;
+const deviceQuaternion = new THREE.Quaternion();
 
+startButton.addEventListener('click', handlePermissionRequest);
+
+function handlePermissionRequest() {
+    // Check for iOS 13+ permission API
+    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission()
+            .then(permissionState => {
+                if (permissionState === 'granted') {
+                    setupSceneAndCalibration();
+                } else {
+                    infoText.textContent = 'Permission for device orientation was denied. Please refresh and try again.';
+                    startButton.disabled = true;
+                }
+            })
+            .catch((error) => {
+                infoText.textContent = `An error occurred: ${error.message}`;
+                console.error(error);
+            });
+    } else {
+        // Handle non-iOS devices that don't need explicit permission
+        setupSceneAndCalibration();
+    }
+}
+
+function setupSceneAndCalibration() {
+    initScene();
+    
+    // Update UI for calibration step
+    infoHeader.textContent = 'Calibration';
+    infoText.textContent = 'Ready to calibrate.';
+    calibrationHelper.style.display = 'block';
+    startButton.textContent = 'Calibrate';
+    startButton.disabled = false;
+    
+    // Remove previous listener and add new one for calibration
+    startButton.removeEventListener('click', handlePermissionRequest);
+    startButton.addEventListener('click', calibrateAndStart);
+
+    // Start listening to device orientation to capture data for calibration
+    window.addEventListener('deviceorientation', onDeviceOrientation, true);
+}
+
+function onDeviceOrientation(event) {
+    if (!event.alpha) return;
+
+    const alpha = THREE.MathUtils.degToRad(event.alpha);
+    const beta = THREE.MathUtils.degToRad(event.beta);
+    const gamma = THREE.MathUtils.degToRad(event.gamma);
+    
+    const euler = new THREE.Euler(beta, alpha, -gamma, 'YXZ');
+    deviceQuaternion.setFromEuler(euler);
+}
+
+function calibrateAndStart() {
+    // The device should be flat, so its current orientation is our baseline.
+    // The screen transform will be applied later, so we just need the raw device quaternion.
+    calibrationQuaternion.copy(deviceQuaternion).invert();
+    isCalibrated = true;
+
+    // Hide overlay and start the experience
+    overlay.style.display = 'none';
+    animate();
+}
+
+function initScene() {
     // Scene
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x87ceeb);
@@ -38,17 +103,8 @@ function init() {
     // World content
     createWorld();
 
-    // Controls
-    setupDeviceControls(() => {
-        // This callback is executed once calibration is done.
-        overlay.style.display = 'none';
-    });
-
     // Handle window resize
     window.addEventListener('resize', onWindowResize);
-
-    // Start animation
-    animate();
 }
 
 function createWorld() {
@@ -78,68 +134,25 @@ function createWorld() {
     }
 }
 
-function setupDeviceControls(onCalibrationDone) {
-    const deviceQuaternion = new THREE.Quaternion();
+function updateCameraOrientation() {
     const screenTransform = new THREE.Quaternion();
     const worldTransform = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // -90 degrees around X-axis
+    const screenOrientation = THREE.MathUtils.degToRad(window.orientation || 0);
 
-    const onDeviceOrientation = (event) => {
-        if (!event.alpha) return;
+    screenTransform.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -screenOrientation);
 
-        const alpha = THREE.MathUtils.degToRad(event.alpha);
-        const beta = THREE.MathUtils.degToRad(event.beta);
-        const gamma = THREE.MathUtils.degToRad(event.gamma);
-        const screenOrientation = THREE.MathUtils.degToRad(window.orientation || 0);
-
-        const euler = new THREE.Euler(beta, alpha, -gamma, 'YXZ');
-        deviceQuaternion.setFromEuler(euler);
-        
-        screenTransform.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -screenOrientation);
-        
-        if (!isCalibrated) {
-            isCalibrated = true;
-            
-            // To get the initial device orientation without screen rotation,
-            // we apply the inverse of the screen transform.
-            calibrationQuaternion.copy(deviceQuaternion).multiply(screenTransform.clone().invert());
-
-            if (onCalibrationDone) {
-                onCalibrationDone();
-            }
-        }
-        
-        // Combine transforms
-        camera.quaternion.copy(worldTransform);
-        // Apply inverse of calibration rotation
-        camera.quaternion.multiply(calibrationQuaternion.clone().invert());
-        // Apply current device rotation
-        camera.quaternion.multiply(deviceQuaternion);
-        // Apply screen orientation
-        camera.quaternion.multiply(screenTransform);
-    };
-
-    const requestAndStart = () => {
-        window.addEventListener('deviceorientation', onDeviceOrientation, true);
-    };
-
-    // Check for iOS 13+ permission API
-    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-        DeviceOrientationEvent.requestPermission()
-            .then(permissionState => {
-                if (permissionState === 'granted') {
-                    requestAndStart();
-                } else {
-                    alert('Permission for device orientation not granted.');
-                }
-            })
-            .catch(console.error);
-    } else {
-        // Handle non-iOS devices
-        requestAndStart();
-    }
+    // Combine transforms
+    camera.quaternion.copy(worldTransform);
+    // Apply calibration rotation
+    camera.quaternion.multiply(calibrationQuaternion);
+    // Apply current device rotation
+    camera.quaternion.multiply(deviceQuaternion);
+    // Apply screen orientation
+    camera.quaternion.multiply(screenTransform);
 }
 
 function onWindowResize() {
+    if(!camera || !renderer) return;
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -147,5 +160,8 @@ function onWindowResize() {
 
 function animate() {
     requestAnimationFrame(animate);
+    if(isCalibrated) {
+        updateCameraOrientation();
+    }
     renderer.render(scene, camera);
 }
